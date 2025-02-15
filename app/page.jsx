@@ -4,47 +4,34 @@ import React, {
   useState,
   useEffect,
   useRef,
-  createContext,
-  useCallback,
 } from "react";
 import { Analytics } from "@vercel/analytics/next";
 import { cn } from "@/lib/utils";
 import TextEditor from '@/components/TextEditor';
-import { Input } from "@/components/ui/input";
-import { Slider } from "@/components/ui/slider";
 // UI
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import InputDialog from "@/components/ui/inputdialog";
 import { Button } from "@/components/ui/button";
 import {
-  LoaderCircle,
-  Crop,
-  ImageUp,
-  ImageDown,
   Github,
-  LoaderPinwheel,
   Fan,
-  Plus,
-  Eraser,
 } from "lucide-react";
+import { QuickGuide } from '@/components/QuickGuide';
+import { Toolbar } from '@/components/Toolbar';
 
 // Image manipulations
 import {
   resizeCanvas,
-  mergeMasks,
   maskImageCanvas,
   resizeAndPadBox,
   canvasToFloat32Array,
   float32ArrayToCanvas,
-  sliceTensor,
-  maskCanvasToFloat32Array
+  sliceTensor
 } from "@/lib/imageutils";
 
 // Add font constants at the top
@@ -104,7 +91,6 @@ export default function Home() {
   const [textLayers, setTextLayers] = useState([]);
   const [selectedText, setSelectedText] = useState(null);
   const [selectedObject, setSelectedObject] = useState(null);
-  const [textDepth, setTextDepth] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const draggedText = useRef(null);
@@ -114,6 +100,24 @@ export default function Home() {
   const resizingText = useRef(null);
   const [resizeHandle, setResizeHandle] = useState(null); // 'tl', 'tr', 'bl', 'br'
   const [showBorder, setShowBorder] = useState(true);
+
+  // Add font loading check
+  const [loadedFonts, setLoadedFonts] = useState(new Set());
+
+  // Add font loading effect
+  useEffect(() => {
+    const loadFonts = async () => {
+      for (const font of Object.values(FONTS)) {
+        try {
+          await document.fonts.load(`16px ${font}`);
+          setLoadedFonts(prev => new Set([...prev, font]));
+        } catch (e) {
+          console.error(`Failed to load font: ${font}`, e);
+        }
+      }
+    };
+    loadFonts();
+  }, []);
 
   // Add helper function for coordinate conversion
   const convertCoordinates = (clientX, clientY, canvas, targetSize) => {
@@ -252,6 +256,14 @@ export default function Home() {
     setMask(null);
     setPrevMaskArray(null);
     setImageEncoded(false);
+    setTextLayers([]); // Reset text when loading new image
+  }
+
+  // Reset only mask, preserve text
+  const resetMask = () => {
+    pointsRef.current = [];
+    setMask(null);
+    setPrevMaskArray(null);
   }
 
   // New image: From File
@@ -266,11 +278,53 @@ export default function Home() {
 
   // New image: From URL 
   const handleUrl = (urlText) => {
-    const dataURL = urlText;
+    const tryLoadImage = (url) => {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
 
-    resetState()
-    setStatus("Encode image");
-    setImageURL(dataURL);
+        // Добавим таймаут для быстрого фейла при CORS
+        const timeoutId = setTimeout(() => {
+          console.log('Image load timed out');
+          img.src = ''; // прерываем загрузку
+          reject(new Error('Image load timed out'));
+        }, 3000);
+
+        img.onload = () => {
+          clearTimeout(timeoutId);
+          console.log('Image loaded successfully');
+          resolve(url);
+        };
+
+        img.onerror = (e) => {
+          clearTimeout(timeoutId);
+          console.error('Image load failed:', e);
+          reject(new Error('Image load failed'));
+        };
+
+        img.crossOrigin = "anonymous";
+        img.src = url;
+      });
+    };
+
+    const loadWithProxy = (originalUrl) => {
+      console.log('Using proxy for:', originalUrl);
+      const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(originalUrl)}`;
+      resetState();
+      setStatus("Encode image (via proxy)");
+      setImageURL(proxyUrl);
+    };
+
+    tryLoadImage(urlText)
+      .then(() => {
+        console.log('Direct load successful');
+        resetState();
+        setStatus("Encode image");
+        setImageURL(urlText);
+      })
+      .catch((error) => {
+        console.log('Falling back to proxy due to:', error);
+        loadWithProxy(urlText);
+      });
   };
 
   function handleRequestStats() {
@@ -389,8 +443,8 @@ export default function Home() {
     const newText = {
       id: Date.now(),
       text: "New Text",
-      x: canvas.width / 2,
-      y: canvas.height / 2,
+      x: 0,
+      y: 24,
       depth: 50,
       fontSize: 24,
       fontFamily: FONTS.FORUM,
@@ -399,7 +453,9 @@ export default function Home() {
       fillColor: "#ffffff",
       strokeColor: "#000000",
       shadowBlur: 2,
-      shadowColor: "rgba(0,0,0,0.5)"
+      shadowColor: "rgba(0,0,0,0.5)",
+      letterSpacing: 0,
+      lineHeight: 1.2
     };
 
     setTextLayers([...textLayers, newText]);
@@ -415,6 +471,30 @@ export default function Home() {
   const handleMouseDown = (event) => {
     const canvas = canvasEl.current;
     const { x, y } = convertCoordinates(event.clientX, event.clientY, canvas, { w: canvas.width, h: canvas.height });
+
+    // Check for delete button click first
+    const deleteButtonClicked = textLayers.find(layer => {
+      if (selectedText?.id !== layer.id) return false;
+
+      const ctx = canvas.getContext("2d");
+      ctx.font = `bold ${layer.fontSize}px ${layer.fontFamily}`;
+      const metrics = ctx.measureText(layer.text);
+      const padding = 10;
+      const deleteButtonSize = 16;
+      const deleteButtonX = layer.x + metrics.width + padding;
+      const deleteButtonY = layer.y - layer.fontSize - padding - deleteButtonSize - 4;
+
+      return Math.sqrt(
+        Math.pow(x - deleteButtonX, 2) +
+        Math.pow(y - deleteButtonY, 2)
+      ) <= deleteButtonSize / 2;
+    });
+
+    if (deleteButtonClicked) {
+      setTextLayers(layers => layers.filter(l => l.id !== deleteButtonClicked.id));
+      setSelectedText(null);
+      return;
+    }
 
     // Check for resize handles first
     const resizeHandleClicked = textLayers.find(layer => {
@@ -527,7 +607,7 @@ export default function Home() {
 
   // Update text layer effect
   useEffect(() => {
-    if (mask && canvasEl.current && !isDragging && !isResizing) {
+    if (mask && canvasEl.current && !isDragging && !isResizing && loadedFonts.size > 0) {
       const canvas = canvasEl.current;
       const ctx = canvas.getContext("2d");
       const maskCtx = mask.getContext("2d");
@@ -550,29 +630,55 @@ export default function Home() {
 
       // 2. Draw all text layers with enhanced styling
       textLayers.forEach(layer => {
-        ctx.font = `bold ${layer.fontSize}px ${layer.fontFamily}`;
+        ctx.font = `${FONT_WEIGHTS.MEDIUM} ${layer.fontSize}px ${layer.fontFamily}`;
+        ctx.textBaseline = 'alphabetic';
+        ctx.textRendering = 'optimizeLegibility';
+        ctx.letterSpacing = `${layer.letterSpacing}px`;
         const metrics = ctx.measureText(layer.text);
-        const textHeight = layer.fontSize;
+        const textHeight = layer.fontSize * layer.lineHeight;
         const padding = 10;
 
         // Set global opacity for the text
         ctx.globalAlpha = layer.opacity;
 
+        // Enable better text rendering
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
         // Add shadow for smoother edges
         ctx.shadowBlur = layer.shadowBlur;
         ctx.shadowColor = layer.shadowColor;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
 
-        // Draw text stroke
-        ctx.lineWidth = layer.strokeWidth;
-        ctx.strokeStyle = layer.strokeColor;
-        ctx.strokeText(layer.text, layer.x, layer.y);
+        // Draw text with improved quality
+        if (layer.strokeWidth > 0) {
+          // Draw multiple strokes for better quality
+          const strokePasses = 3;
+          const baseWidth = layer.strokeWidth / strokePasses;
 
-        // Draw text fill
+          for (let i = 0; i < strokePasses; i++) {
+            ctx.lineWidth = baseWidth;
+            ctx.strokeStyle = layer.strokeColor;
+            ctx.lineJoin = 'round';
+            ctx.miterLimit = 2;
+            ctx.strokeText(layer.text, layer.x, layer.y);
+          }
+        }
+
+        // Draw text fill with multiple passes for better anti-aliasing
         ctx.fillStyle = layer.fillColor;
         ctx.fillText(layer.text, layer.x, layer.y);
 
-        // Reset shadow
+        // Second pass with slight offset for better edge smoothing
+        ctx.globalAlpha = layer.opacity * 0.4;
+        ctx.fillText(layer.text, layer.x + 0.5, layer.y + 0.5);
+        ctx.globalAlpha = layer.opacity;
+
+        // Reset shadow and other effects
         ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
         ctx.globalAlpha = 1;
 
         // Draw selection box and handles if text is selected
@@ -672,16 +778,6 @@ export default function Home() {
           }
         }
 
-        // Only draw border if we found mask pixels
-        if (hasMask) {
-          ctx.beginPath();
-          ctx.moveTo(left, top);
-          ctx.lineTo(right, top);
-          ctx.lineTo(right, bottom);
-          ctx.lineTo(left, bottom);
-          ctx.closePath();
-          ctx.stroke();
-        }
         ctx.setLineDash([]);
       }
 
@@ -702,7 +798,7 @@ export default function Home() {
         ctx.globalAlpha = 1;
       }
     }
-  }, [mask, image, textLayers, showMask, isDragging, isResizing, selectedText, showBorder]);
+  }, [mask, image, textLayers, showMask, isDragging, isResizing, selectedText, showBorder, loadedFonts]);
 
   // Add simple text drawing during drag
   useEffect(() => {
@@ -738,10 +834,8 @@ export default function Home() {
 
   // Update reset handler
   const handleResetMask = () => {
-    setMask(null);
-    setPrevMaskArray(null);
+    resetMask();
     setSelectedObject(null);
-    pointsRef.current = [];
 
     // Redraw canvas with just the image and text
     const canvas = canvasEl.current;
@@ -895,6 +989,15 @@ export default function Home() {
     }, 100); // Small delay to ensure the render cycle completes
   };
 
+  // Update font family change handler
+  const handleFontChange = (newFont) => {
+    if (!loadedFonts.has(newFont)) return; // Don't change if font not loaded
+    setTextLayers(layers =>
+      layers.map(l => l.id === selectedText.id ? { ...l, fontFamily: newFont } : l)
+    );
+    setSelectedText(prev => ({ ...prev, fontFamily: newFont }));
+  };
+
   return (
     <div className="flex items-center justify-center min-h-screen bg-background p-4">
       <Card className="w-full max-w-[1400px]">
@@ -933,90 +1036,33 @@ export default function Home() {
         </CardHeader>
         <CardContent>
           <div className="flex flex-col gap-4">
-            <div className="flex justify-between items-center gap-4 border-b pb-4">
-              <div className="flex gap-2">
-                <Button
-                  onClick={encodeImageClick}
-                  disabled={loading || imageEncoded}
-                >
-                  <p className="flex items-center gap-2">
-                    {loading && <LoaderCircle className="animate-spin w-6 h-6" />}
-                    {status}
-                  </p>
-                </Button>
-                <Button
-                  onClick={() => setShowMask(!showMask)}
-                  variant={showMask ? "default" : "secondary"}>
-                  Show Mask
-                </Button>
-                <Button
-                  onClick={() => setShowBorder(!showBorder)}
-                  variant={showBorder ? "default" : "secondary"}>
-                  Show Border
-                </Button>
-                <Button
-                  onClick={handleResetMask}
-                  variant="secondary"
-                  disabled={!mask}>
-                  <Eraser className="w-4 h-4 mr-2" /> Reset Mask
-                </Button>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  onClick={() => { fileInputEl.current.click() }}
-                  variant="secondary"
-                  disabled={loading}>
-                  <ImageUp className="mr-2" /> Upload Image
-                </Button>
-                <Button
-                  onClick={() => { setInputDialogOpen(true) }}
-                  variant="secondary"
-                  disabled={loading}
-                >
-                  <ImageUp className="mr-2" /> From URL
-                </Button>
-                <Button
-                  onClick={cropClick}
-                  disabled={mask == null}
-                  variant="secondary">
-                  <ImageDown className="mr-2" /> Export Mask
-                </Button>
-                <Button
-                  onClick={() => exportTextOnly('png')}
-                  disabled={textLayers.length === 0}
-                  variant="secondary">
-                  <ImageDown className="mr-2" /> PNG
-                </Button>
-                <Button
-                  onClick={() => exportTextOnly('jpeg')}
-                  disabled={textLayers.length === 0}
-                  variant="secondary">
-                  <ImageDown className="mr-2" /> JPEG
-                </Button>
-              </div>
-            </div>
+            <Toolbar
+              loading={loading}
+              status={status}
+              showMask={showMask}
+              setShowMask={setShowMask}
+              showBorder={showBorder}
+              setShowBorder={setShowBorder}
+              mask={mask}
+              handleResetMask={handleResetMask}
+              handleFileUpload={handleFileUpload}
+              setInputDialogOpen={setInputDialogOpen}
+              cropClick={cropClick}
+              exportTextOnly={exportTextOnly}
+              textLayers={textLayers}
+              fileInputEl={fileInputEl}
+              encodeImageClick={encodeImageClick}
+              imageEncoded={imageEncoded}
+            />
 
             <div className="flex gap-8">
               <div className="flex-1">
-                <div className="mb-4 text-sm text-muted-foreground">
-                  <p><strong>Quick Guide:</strong></p>
-                  <ol className="list-decimal list-inside space-y-1">
-                    <li>Enable "Show Mask" and click on an object you want to add text to</li>
-                    <li>Click "Add Text" button on the right</li>
-                    <li>Disable "Show Mask" to see your text clearly</li>
-                    <li>Drag text to position, use corner handles to resize</li>
-                    <li>Edit text content and style in the right panel</li>
-                  </ol>
-                </div>
+                <QuickGuide />
                 <canvas
                   ref={canvasEl}
                   width={768}
                   height={768}
-                  onClick={(event) => {
-                    if (!isDragging) {
-                      imageClick(event);
-                    }
-                  }}
+                  onClick={imageClick}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     if (!isDragging) {
@@ -1041,203 +1087,16 @@ export default function Home() {
                 />
               </div>
 
-              <div className="w-80 flex flex-col gap-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-medium text-lg">Text Layers</h3>
-                  <Button
-                    onClick={handleAddText}
-                    variant="outline"
-                    size="sm"
-                    disabled={!mask}>
-                    <Plus className="w-4 h-4 mr-2" /> Add Text
-                  </Button>
-                </div>
-
-                <div className="flex flex-col gap-2 max-h-[500px] overflow-y-auto">
-                  {textLayers.map(layer => (
-                    <div
-                      key={layer.id}
-                      className={cn(
-                        "p-3 border rounded-lg cursor-pointer hover:bg-accent transition-colors",
-                        selectedText?.id === layer.id ? "border-primary bg-accent" : "border-muted"
-                      )}
-                      onClick={() => setSelectedText(layer)}
-                    >
-                      <p className="truncate font-medium" style={{ fontFamily: layer.fontFamily }}>
-                        {layer.text}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-
-                {selectedText && (
-                  <div className="flex flex-col gap-4 p-4 border rounded-lg">
-                    <h4 className="font-medium">Edit Text</h4>
-                    <Input
-                      value={selectedText.text}
-                      onChange={(e) => {
-                        const newText = e.target.value;
-                        setTextLayers(layers =>
-                          layers.map(l => l.id === selectedText.id ? { ...l, text: newText } : l)
-                        );
-                        setSelectedText(prev => ({ ...prev, text: newText }));
-                      }}
-                      placeholder="Enter text..."
-                      style={{ fontFamily: selectedText.fontFamily }}
-                    />
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Font Size</label>
-                      <div className="flex gap-2 items-center">
-                        <Slider
-                          value={[selectedText.fontSize]}
-                          onValueChange={([value]) => {
-                            setTextLayers(layers =>
-                              layers.map(l => l.id === selectedText.id ? { ...l, fontSize: value } : l)
-                            );
-                            setSelectedText(prev => ({ ...prev, fontSize: value }));
-                          }}
-                          min={12}
-                          max={72}
-                          step={1}
-                          className="flex-1"
-                        />
-                        <span className="text-sm w-8">{selectedText.fontSize}</span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Stroke Width</label>
-                      <div className="flex gap-2 items-center">
-                        <Slider
-                          value={[selectedText.strokeWidth]}
-                          onValueChange={([value]) => {
-                            setTextLayers(layers =>
-                              layers.map(l => l.id === selectedText.id ? { ...l, strokeWidth: value } : l)
-                            );
-                            setSelectedText(prev => ({ ...prev, strokeWidth: value }));
-                          }}
-                          min={0}
-                          max={10}
-                          step={0.5}
-                          className="flex-1"
-                        />
-                        <span className="text-sm w-8">{selectedText.strokeWidth}</span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Opacity</label>
-                      <div className="flex gap-2 items-center">
-                        <Slider
-                          value={[selectedText.opacity]}
-                          onValueChange={([value]) => {
-                            setTextLayers(layers =>
-                              layers.map(l => l.id === selectedText.id ? { ...l, opacity: value } : l)
-                            );
-                            setSelectedText(prev => ({ ...prev, opacity: value }));
-                          }}
-                          min={0}
-                          max={1}
-                          step={0.1}
-                          className="flex-1"
-                        />
-                        <span className="text-sm w-8">{selectedText.opacity.toFixed(1)}</span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Shadow Blur</label>
-                      <div className="flex gap-2 items-center">
-                        <Slider
-                          value={[selectedText.shadowBlur]}
-                          onValueChange={([value]) => {
-                            setTextLayers(layers =>
-                              layers.map(l => l.id === selectedText.id ? { ...l, shadowBlur: value } : l)
-                            );
-                            setSelectedText(prev => ({ ...prev, shadowBlur: value }));
-                          }}
-                          min={0}
-                          max={10}
-                          step={0.5}
-                          className="flex-1"
-                        />
-                        <span className="text-sm w-8">{selectedText.shadowBlur}</span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">Text Color</label>
-                        <Input
-                          type="color"
-                          value={selectedText.fillColor}
-                          onChange={(e) => {
-                            const newColor = e.target.value;
-                            setTextLayers(layers =>
-                              layers.map(l => l.id === selectedText.id ? { ...l, fillColor: newColor } : l)
-                            );
-                            setSelectedText(prev => ({ ...prev, fillColor: newColor }));
-                          }}
-                          className="h-8"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">Stroke Color</label>
-                        <Input
-                          type="color"
-                          value={selectedText.strokeColor}
-                          onChange={(e) => {
-                            const newColor = e.target.value;
-                            setTextLayers(layers =>
-                              layers.map(l => l.id === selectedText.id ? { ...l, strokeColor: newColor } : l)
-                            );
-                            setSelectedText(prev => ({ ...prev, strokeColor: newColor }));
-                          }}
-                          className="h-8"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Font Family</label>
-                      <select
-                        value={selectedText.fontFamily}
-                        onChange={(e) => {
-                          const newFont = e.target.value;
-                          setTextLayers(layers =>
-                            layers.map(l => l.id === selectedText.id ? { ...l, fontFamily: newFont } : l)
-                          );
-                          setSelectedText(prev => ({ ...prev, fontFamily: newFont }));
-                        }}
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      >
-                        <option value={FONTS.FORUM} style={{ fontFamily: FONTS.FORUM }}>Forum</option>
-                        <option value={FONTS.INSTRUMENT} style={{ fontFamily: FONTS.INSTRUMENT }}>Instrument Serif</option>
-                        <option value={FONTS.OPEN_SANS} style={{ fontFamily: FONTS.OPEN_SANS }}>Open Sans</option>
-                        <option value={FONTS.LATO} style={{ fontFamily: FONTS.LATO }}>Lato</option>
-                        <option value={FONTS.MONTSERRAT} style={{ fontFamily: FONTS.MONTSERRAT }}>Montserrat</option>
-                        <option value={FONTS.ROBOTO_CONDENSED} style={{ fontFamily: FONTS.ROBOTO_CONDENSED }}>Roboto Condensed</option>
-                        <option value={FONTS.OSWALD} style={{ fontFamily: FONTS.OSWALD }}>Oswald</option>
-                        <option value={FONTS.POPPINS} style={{ fontFamily: FONTS.POPPINS }}>Poppins</option>
-                        <option value={FONTS.RALEWAY} style={{ fontFamily: FONTS.RALEWAY }}>Raleway</option>
-                        <option value={FONTS.SLABO} style={{ fontFamily: FONTS.SLABO }}>Slabo 27px</option>
-                      </select>
-                    </div>
-
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => {
-                        setTextLayers(layers => layers.filter(l => l.id !== selectedText.id));
-                        setSelectedText(null);
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                )}
-              </div>
+              <TextEditor
+                textLayers={textLayers}
+                selectedText={selectedText}
+                setSelectedText={setSelectedText}
+                setTextLayers={setTextLayers}
+                handleAddText={handleAddText}
+                mask={mask}
+                loadedFonts={loadedFonts}
+                handleFontChange={handleFontChange}
+              />
             </div>
           </div>
         </CardContent>
