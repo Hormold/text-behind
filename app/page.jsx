@@ -982,7 +982,7 @@ export default function Home() {
             variant="outline"
             size="sm"
             onClick={() =>
-              window.open("https://github.com/geronimi73/next-sam", "_blank")
+              window.open("https://github.com/Hormold/text-behind", "_blank")
             }
           >
             <Github className="w-4 h-4 mr-2" />
