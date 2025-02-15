@@ -62,9 +62,6 @@ Open your browser and visit http://localhost:3000
 8. Edit text content and style in the right panel
 9. Export as PNG/JPEG or export the mask only
 
-# Demo
-![Project Demo](assets/project-demo.mov)
-
 # Acknowledgements
 * Original project by [geronimi73/next-sam](https://github.com/geronimi73/next-sam)
 * [Meta's Segment Anything Model 2](https://ai.meta.com/blog/segment-anything-2/)

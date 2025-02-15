@@ -472,30 +472,6 @@ export default function Home() {
     const canvas = canvasEl.current;
     const { x, y } = convertCoordinates(event.clientX, event.clientY, canvas, { w: canvas.width, h: canvas.height });
 
-    // Check for delete button click first
-    const deleteButtonClicked = textLayers.find(layer => {
-      if (selectedText?.id !== layer.id) return false;
-
-      const ctx = canvas.getContext("2d");
-      ctx.font = `bold ${layer.fontSize}px ${layer.fontFamily}`;
-      const metrics = ctx.measureText(layer.text);
-      const padding = 10;
-      const deleteButtonSize = 16;
-      const deleteButtonX = layer.x + metrics.width + padding;
-      const deleteButtonY = layer.y - layer.fontSize - padding - deleteButtonSize - 4;
-
-      return Math.sqrt(
-        Math.pow(x - deleteButtonX, 2) +
-        Math.pow(y - deleteButtonY, 2)
-      ) <= deleteButtonSize / 2;
-    });
-
-    if (deleteButtonClicked) {
-      setTextLayers(layers => layers.filter(l => l.id !== deleteButtonClicked.id));
-      setSelectedText(null);
-      return;
-    }
-
     // Check for resize handles first
     const resizeHandleClicked = textLayers.find(layer => {
       if (selectedText?.id !== layer.id) return false;
