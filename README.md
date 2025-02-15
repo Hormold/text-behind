@@ -1,6 +1,8 @@
 # Text Overlay for SAM2 Segmentation
 This is a Next.js application that extends [geronimi73/next-sam](https://github.com/geronimi73/next-sam) project by adding text overlay capabilities to the segmented images. The base project performs image segmentation using Meta's Segment Anything Model V2 (SAM2) and onnxruntime-web.
 
+> 🚀 Try it now: [text-behind-six.vercel.app](https://text-behind-six.vercel.app/)
+
 > 💡 Everything runs directly in your browser - no backend required! All processing, including AI segmentation and text manipulation, happens on your device.
 
 ![Editor UI](assets/export-demo.png)
